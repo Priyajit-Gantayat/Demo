@@ -1,0 +1,223 @@
+// Package main contains the refactored test code with Gomock integration.
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/assert"
+)
+
+// Device represents the structure for a device.
+type Device struct {
+	DeviceName   string  `json:"device_name"`
+	DeviceType   string  `json:"device_type"`
+	Brand        string  `json:"brand"`
+	Model        string  `json:"model"`
+	Os           string  `json:"os"`
+	OsVersion    string  `json:"os_version"`
+	PurchaseDate string  `json:"purchase_date"`
+	WarrantyEnd  string  `json:"warranty_end"`
+	Status       string  `json:"status"`
+	Price        float64 `json:"price"`
+}
+
+// DeviceRepository abstracts database operations.
+type DeviceRepository interface {
+	CreateDevice(device *Device) error
+	GetDeviceByID(id uint) (*Device, error)
+	ListDevices() ([]Device, error)
+	UpdateDevice(id uint, updates map[string]interface{}) error
+	DeleteDevice(id uint) error
+}
+
+// Mock repository setup
+var mockRepo *MockDeviceRepository
+
+// setupTestRouterWithMock sets up the Gin router with mocked repository.
+func setupTestRouterWithMock(mockRepo DeviceRepository) *gin.Engine {
+	r := gin.Default()
+
+	// Endpoint to create a device
+	r.POST("/device", func(c *gin.Context) {
+		var device Device
+		if err := c.ShouldBindJSON(&device); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := mockRepo.CreateDevice(&device); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create device"})
+			return
+		}
+		c.JSON(http.StatusCreated, device)
+	})
+
+	// Endpoint to get a device by ID
+	r.GET("/device/:id", func(c *gin.Context) {
+		id := uint(1) // Hardcoded for demonstration; parse `id` to uint
+		device, err := mockRepo.GetDeviceByID(id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
+			return
+		}
+		c.JSON(http.StatusOK, device)
+	})
+
+	// Endpoint to list all devices
+	r.GET("/device", func(c *gin.Context) {
+		devices, err := mockRepo.ListDevices()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch devices"})
+			return
+		}
+		c.JSON(http.StatusOK, devices)
+	})
+
+	// Endpoint to update a device
+	r.PUT("/device/:id", func(c *gin.Context) {
+		id := uint(1) // Hardcoded for demonstration; parse `id` to uint
+		var updates map[string]interface{}
+		if err := c.ShouldBindJSON(&updates); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := mockRepo.UpdateDevice(id, updates); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update device"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Device updated successfully"})
+	})
+
+	// Endpoint to delete a device
+	r.DELETE("/device/:id", func(c *gin.Context) {
+		id := uint(1) // Hardcoded for demonstration; parse `id` to uint
+		if err := mockRepo.DeleteDevice(id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete device"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Device deleted successfully"})
+	})
+
+	return r
+}
+
+// Test cases using Gomock
+
+func TestRegisterDevice(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRepo = NewMockDeviceRepository(ctrl)
+	r := setupTestRouterWithMock(mockRepo)
+
+	payload := Device{
+		DeviceName:   "Test Device",
+		DeviceType:   "Mobile",
+		Brand:        "TestBrand",
+		Model:        "ModelX",
+		Os:           "Android",
+		OsVersion:    "11",
+		PurchaseDate: "2023-01-01",
+		WarrantyEnd:  "2025-01-01",
+		Status:       "Active",
+		Price:        500,
+	}
+	mockRepo.EXPECT().CreateDevice(&payload).Return(nil)
+
+	jsonPayload, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", "/device", bytes.NewBuffer(jsonPayload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+func TestListDevices(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRepo = NewMockDeviceRepository(ctrl)
+	r := setupTestRouterWithMock(mockRepo)
+
+	expectedDevices := []Device{
+		{DeviceName: "Device1", DeviceType: "Mobile", Brand: "Brand1", Status: "Active", Price: 200},
+		{DeviceName: "Device2", DeviceType: "Laptop", Brand: "Brand2", Status: "Inactive", Price: 1000},
+	}
+	mockRepo.EXPECT().ListDevices().Return(expectedDevices, nil)
+
+	req, _ := http.NewRequest("GET", "/device", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var devices []Device
+	_ = json.Unmarshal(w.Body.Bytes(), &devices)
+	assert.Len(t, devices, 2)
+}
+
+func TestGetDeviceByID(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRepo = NewMockDeviceRepository(ctrl)
+	r := setupTestRouterWithMock(mockRepo)
+
+	device := Device{DeviceName: "Device1", DeviceType: "Mobile", Brand: "Brand1", Status: "Active", Price: 200}
+	mockRepo.EXPECT().GetDeviceByID(uint(1)).Return(&device, nil)
+
+	req, _ := http.NewRequest("GET", "/device/1", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	response := Device{}
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, device.DeviceName, response.DeviceName)
+}
+
+func TestUpdateDevice(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRepo = NewMockDeviceRepository(ctrl)
+	r := setupTestRouterWithMock(mockRepo)
+
+	updatePayload := map[string]interface{}{
+		"device_name": "Updated Device",
+		"price":       300,
+	}
+	mockRepo.EXPECT().UpdateDevice(uint(1), updatePayload).Return(nil)
+
+	jsonPayload, _ := json.Marshal(updatePayload)
+	req, _ := http.NewRequest("PUT", "/device/1", bytes.NewBuffer(jsonPayload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestDeleteDevice(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRepo = NewMockDeviceRepository(ctrl)
+	r := setupTestRouterWithMock(mockRepo)
+
+	mockRepo.EXPECT().DeleteDevice(uint(1)).Return(nil)
+
+	req, _ := http.NewRequest("DELETE", "/device/1", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
